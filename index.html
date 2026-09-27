@@ -235,8 +235,10 @@ function showHelp() {
   $('#unsupported').style.display = 'block';
 }
 
+let choosing = false;
 async function connect(any = false) {
-  if (!navigator.bluetooth) return;
+  if (!navigator.bluetooth || choosing || settingUp) return;
+  clearTimeout(reconnectTimer);
   try {
     if (navigator.bluetooth.getAvailability && !(await navigator.bluetooth.getAvailability())) {
       log('getAvailability: false'); setStatus('Bluetooth indisponível para o navegador', RED); showHelp(); return;
@@ -244,9 +246,11 @@ async function connect(any = false) {
   } catch {}
   try {
     setStatus('Escolha o aparelho…', YELLOW);
+    choosing = true;
     const d = await navigator.bluetooth.requestDevice(any
       ? { acceptAllDevices: true, optionalServices: [SERVICE] }
       : { filters: [{ namePrefix: 'LVS-' }, { services: [SERVICE] }], optionalServices: [SERVICE] });
+    choosing = false;
     if (device) device.removeEventListener('gattserverdisconnected', onDisconnected);
     device = d;
     device.addEventListener('gattserverdisconnected', onDisconnected);
@@ -256,6 +260,7 @@ async function connect(any = false) {
     setStatus('Conectando…', YELLOW);
     await setup();
   } catch (e) {
+    choosing = false;
     log('erro: ' + e.name + ': ' + e.message);
     if (e.name === 'NotFoundError' && /cancel/i.test(e.message)) setStatus('Nenhum aparelho escolhido');
     else if (e.name === 'NotFoundError') { setStatus('Chrome sem acesso ao Bluetooth: ' + e.message, RED); showHelp(); }
@@ -266,7 +271,13 @@ async function connect(any = false) {
 }
 
 // Abre GATT, características e notificações. Usado na 1ª conexão e nas reconexões.
+let settingUp = false;
 async function setup() {
+  if (settingUp) return;
+  settingUp = true;
+  try { await doSetup(); } finally { settingUp = false; }
+}
+async function doSetup() {
   const server = await device.gatt.connect();
   const svc = await server.getPrimaryService(SERVICE);
   tx = await svc.getCharacteristic(TX);
@@ -306,7 +317,7 @@ function scheduleReconnect() {
   setStatus('Reconectando…', YELLOW);
   log('nova tentativa em ' + Math.round(delay / 1000) + ' s');
   reconnectTimer = setTimeout(async () => {
-    if (!wantConnected || ready) return;
+    if (!wantConnected || ready || settingUp) return;
     try { await setup(); }
     catch (e) { log('reconexão falhou: ' + e.message); if (wantConnected && !ready) scheduleReconnect(); }
   }, delay);
@@ -321,8 +332,12 @@ function cleanup() {
 }
 
 async function disconnect() {
-  wantConnected = false;
-  if (ready) { try { await write('Vibrate:0;'); } catch {} }
+  wantConnected = false; clearTimeout(reconnectTimer);
+  pattern = null; wanted = 0;
+  if (ready) {   // PARAR pela fila (nunca duas escritas GATT ao mesmo tempo) e espera confirmar
+    queue.length = 0; queue.push('Vibrate:0;'); sent = 0; pump();
+    for (let t = 0; t < 40 && (busy || queue.length); t++) await new Promise(r => setTimeout(r, 100));
+  }
   if (device && device.gatt.connected) device.gatt.disconnect();
   cleanup(); setStatus('Desconectado');
 }
