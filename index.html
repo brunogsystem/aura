@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0E0B1A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="robots" content="noindex">
+<title>Aura</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 108 108'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%237C4DFF'/%3E%3Cstop offset='1' stop-color='%23FF4D8D'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='54' cy='54' r='50' fill='url(%23g)'/%3E%3Ccircle cx='54' cy='54' r='28' fill='none' stroke='%23fffc' stroke-width='5'/%3E%3Ccircle cx='54' cy='54' r='12' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+  :root { --bg1:#0E0B1A; --bg2:#1C1033; --card:rgba(255,255,255,.08); --stroke:rgba(255,255,255,.12);
+          --violet:#7C4DFF; --pink:#FF4D8D; --muted:rgba(255,255,255,.6); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; min-height:100%; background:linear-gradient(var(--bg1),var(--bg2)) fixed; color:#fff;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; -webkit-user-select:none; user-select:none; }
+  main { max-width:460px; margin:0 auto; padding:calc(20px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom)); }
+  header { display:flex; align-items:center; justify-content:space-between; }
+  h1 { margin:0; font-weight:300; font-size:32px; letter-spacing:.08em; }
+  .pill { border:0; border-radius:20px; padding:8px 16px; font:500 14px inherit; font-family:inherit; color:#fff; background:var(--card); cursor:pointer; }
+  .grad { background:linear-gradient(90deg,var(--violet),var(--pink)); }
+  #battery { color:var(--muted); }
+  .card { display:flex; align-items:center; gap:12px; margin-top:14px; padding:14px 12px 14px 16px;
+    background:var(--card); border:1px solid var(--stroke); border-radius:20px; }
+  #dot { width:10px; height:10px; border-radius:50%; background:#6B6480; flex:none; transition:background .3s; }
+  #status { flex:1; font-size:15px; }
+  #dial { display:block; width:100%; max-width:320px; aspect-ratio:1; margin:18px auto 6px; touch-action:none; }
+  .label { font:500 11px inherit; font-family:inherit; letter-spacing:.25em; color:rgba(255,255,255,.47); margin:12px 2px 8px; }
+  #chips { display:flex; flex-wrap:wrap; gap:8px; }
+  #chips::-webkit-scrollbar { display:none; }
+  .chip { flex:none; padding:10px 18px; border-radius:20px; border:1px solid var(--stroke); background:var(--card); color:var(--muted);
+    font:500 14px inherit; font-family:inherit; cursor:pointer; }
+  .chip.on { background:linear-gradient(90deg,var(--violet),var(--pink)); color:#fff; border-color:transparent; }
+  input[type=range] { width:100%; accent-color:var(--pink); height:36px; margin:0 0 8px; }
+  #stop { display:block; width:100%; height:72px; margin:10px 0 18px; border:0; border-radius:36px; color:#fff;
+    font:700 22px inherit; font-family:inherit; letter-spacing:.2em; cursor:pointer;
+    background:linear-gradient(90deg,#E53950,#FF6A3D); box-shadow:0 8px 24px rgba(229,57,80,.35); }
+  #stop:active { transform:scale(.98); }
+  #toggle { display:block; margin:0 auto; background:none; border:0; color:var(--muted); font:13px inherit; font-family:inherit; cursor:pointer; }
+  #console { display:none; margin-top:8px; padding:12px 14px; background:rgba(0,0,0,.2); border:1px solid var(--stroke); border-radius:16px; }
+  #console.show { display:block; }
+  .row { display:flex; gap:8px; align-items:center; }
+  #cmd { flex:1; min-width:0; background:rgba(255,255,255,.1); border:0; border-radius:12px; padding:10px 12px; color:#fff;
+    font:14px ui-monospace,Menlo,monospace; -webkit-user-select:text; user-select:text; }
+  #log { font:11px/1.5 ui-monospace,Menlo,monospace; color:#9BE3B4; white-space:pre-wrap; margin:10px 0 0; max-height:220px; overflow:auto; }
+  #unsupported { display:none; margin-top:14px; padding:14px 16px; border-radius:16px; background:rgba(229,57,80,.15);
+    border:1px solid rgba(229,57,80,.4); font-size:14px; line-height:1.45; }
+  #unsupported b { color:#fff; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Aura</h1>
+    <button class="pill" id="battery">🔋 —</button>
+  </header>
+
+  <div class="card">
+    <div id="dot"></div>
+    <div id="status">Desconectado</div>
+    <button class="pill grad" id="connect">Conectar</button>
+  </div>
+
+  <div id="unsupported">
+    Este navegador não acessa Bluetooth.<br>
+    <b>No iPhone:</b> instale o app <b>Bluefy</b> (App Store) e abra este link por ele.<br>
+    <b>No Android:</b> use o Chrome.
+  </div>
+
+  <canvas id="dial"></canvas>
+
+  <div class="label">MODO</div>
+  <div id="chips"></div>
+
+  <div class="label">RITMO DOS MODOS</div>
+  <input type="range" id="rhythm" min="0" max="100" value="50">
+
+  <button id="stop">PARAR</button>
+
+  <button id="toggle">⌄&nbsp; Console avançado</button>
+  <div id="console">
+    <div class="row">
+      <input id="cmd" placeholder="ex: Status;" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="pill grad" id="send">Enviar</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="pill" id="any">Buscar qualquer aparelho</button>
+    </div>
+    <pre id="log"></pre>
+  </div>
+</main>
+
+<script>
+const SERVICE = '53300001-0023-4bd4-bbd5-a6920e4c5653';
+const TX      = '53300002-0023-4bd4-bbd5-a6920e4c5653';
+const RX      = '53300003-0023-4bd4-bbd5-a6920e4c5653';
+const TICK_MS = 100, MAX = 20;
+const $ = s => document.querySelector(s);
+
+// ---------- estado ----------
+let device = null, tx = null, ready = false, busy = false;
+const queue = [];
+let wanted = 0, sent = -1, pattern = null, step = 0, lastStep = 0;
+const PATTERNS = {
+  onda:   [4, 8, 12, 16, 20, 16, 12, 8],
+  pulso:  [20, 20, 0, 0],
+  escada: [5, 5, 10, 10, 15, 15, 20, 20, 0, 0],
+  batida: [16, 0, 20, 0, 0, 0, 0],
+};
+
+// ---------- UI util ----------
+function log(s) {
+  const t = new Date().toTimeString().slice(0, 8);
+  const el = $('#log');
+  el.textContent = (t + '  ' + s + '\n' + el.textContent).slice(0, 4000);
+}
+function setStatus(s, color = '#6B6480') { $('#status').textContent = s; $('#dot').style.background = color; }
+const YELLOW = '#FFC857', GREEN = '#3DDC97', RED = '#E53950';
+
+// ---------- chips ----------
+const CHIPS = [['manual', 'Manual'], ['onda', '〰 Onda'], ['pulso', '◉ Pulso'], ['escada', '▲ Escada'],
+               ['batida', '♥ Batida'], ['aleatorio', '✦ Surpresa']];
+for (const [k, label] of CHIPS) {
+  const b = document.createElement('button');
+  b.className = 'chip'; b.textContent = label; b.dataset.k = k;
+  b.onclick = () => { selectChip(k); if (k === 'manual') pattern = null; else { pattern = k; step = 0; lastStep = 0; } };
+  $('#chips').appendChild(b);
+}
+function selectChip(k) { for (const c of $('#chips').children) c.classList.toggle('on', c.dataset.k === k); }
+selectChip('manual');
+
+// ---------- mostrador ----------
+const cv = $('#dial'), ctx = cv.getContext('2d');
+const START = 135, SWEEP = 270;
+let level = 0, pulse = 0;
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = r.width * dpr; cv.height = r.width * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resize); resize();
+const rad = a => a * Math.PI / 180;
+
+function draw() {
+  const w = cv.width / (window.devicePixelRatio || 1), cx = w / 2, cy = w / 2, r = w / 2 - 28;
+  const frac = level / MAX;
+  ctx.clearRect(0, 0, w, w);
+
+  if (level > 0) { // halo pulsante
+    const hr = r * (0.55 + 0.12 * pulse), a = (1 - pulse) * (0.16 + 0.47 * frac);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, hr);
+    g.addColorStop(0, `rgba(255,77,141,${a})`); g.addColorStop(1, 'rgba(255,77,141,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, hr, 0, 2 * Math.PI); ctx.fill();
+  }
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,.2)'; ctx.lineWidth = 2;
+  for (let i = 0; i <= MAX; i++) {
+    const a = rad(START + SWEEP * i / MAX), r1 = r - 22, r2 = r - (i % 5 === 0 ? 32 : 27);
+    ctx.beginPath(); ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+    ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2); ctx.stroke();
+  }
+  ctx.lineWidth = 18; ctx.strokeStyle = 'rgba(255,255,255,.13)';
+  ctx.beginPath(); ctx.arc(cx, cy, r, rad(START), rad(START + SWEEP)); ctx.stroke();
+
+  if (level > 0) {
+    let grad;
+    if (ctx.createConicGradient) {
+      grad = ctx.createConicGradient(rad(START - 5), cx, cy);
+      [['#7C4DFF', 0], ['#B44DFF', .25], ['#FF4D8D', .5], ['#FF7A59', .75], ['#7C4DFF', 1]].forEach(([c, p]) => grad.addColorStop(p, c));
+    } else {
+      grad = ctx.createLinearGradient(cx - r, cy + r, cx + r, cy - r);
+      grad.addColorStop(0, '#7C4DFF'); grad.addColorStop(1, '#FF4D8D');
+    }
+    ctx.strokeStyle = grad;
+    ctx.save(); ctx.shadowColor = 'rgba(255,77,141,.8)'; ctx.shadowBlur = 18 + 14 * frac; ctx.lineWidth = 18;
+    ctx.beginPath(); ctx.arc(cx, cy, r, rad(START), rad(START + SWEEP * frac)); ctx.stroke(); ctx.restore();
+  }
+  const ta = rad(START + SWEEP * frac);
+  ctx.save(); ctx.shadowColor = 'rgba(255,77,141,.7)'; ctx.shadowBlur = 10; ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(cx + Math.cos(ta) * r, cy + Math.sin(ta) * r, 13, 0, 2 * Math.PI); ctx.fill(); ctx.restore();
+
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `200 ${Math.round(r * 0.62)}px -apple-system, "Segoe UI", Roboto, sans-serif`;
+  ctx.fillText(String(level), cx, cy - 8);
+  ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.font = '500 11px -apple-system, "Segoe UI", Roboto, sans-serif';
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
+  ctx.fillText(level === 0 ? 'DESLIGADO' : 'INTENSIDADE', cx, cy + r * 0.42);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+}
+function setLevel(l) { level = Math.max(0, Math.min(MAX, l)); }
+(function anim(t) { pulse = (t % 1400) / 1400; draw(); requestAnimationFrame(anim); })(0);
+
+function touch(e) {
+  const b = cv.getBoundingClientRect(), cx = b.width / 2, cy = b.height / 2;
+  const ang = Math.atan2(e.clientY - b.top - cy, e.clientX - b.left - cx) * 180 / Math.PI;
+  let rel = (((ang - START) % 360) + 360) % 360;
+  if (rel > SWEEP) rel = rel < SWEEP + 45 ? SWEEP : 0; // zona morta: prende na ponta mais próxima
+  const l = Math.round(rel / SWEEP * MAX);
+  if (l !== level) {
+    setLevel(l); selectChip('manual'); pattern = null; wanted = l;
+    if (navigator.vibrate) navigator.vibrate(5);
+  }
+}
+cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); touch(e); });
+cv.addEventListener('pointermove', e => { if (cv.hasPointerCapture(e.pointerId)) touch(e); });
+
+// ---------- Bluetooth ----------
+const enc = new TextEncoder(), dec = new TextDecoder();
+if (!navigator.bluetooth) {
+  $('#unsupported').style.display = 'block';
+  setStatus('Bluetooth indisponível', RED);
+}
+
+async function connect(any = false) {
+  if (!navigator.bluetooth) return;
+  try {
+    setStatus('Escolha o aparelho…', YELLOW);
+    device = await navigator.bluetooth.requestDevice(any
+      ? { acceptAllDevices: true, optionalServices: [SERVICE] }
+      : { filters: [{ namePrefix: 'LVS-' }, { services: [SERVICE] }], optionalServices: [SERVICE] });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    setStatus('Conectando…', YELLOW);
+    $('#connect').textContent = 'Sair';
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    tx = await svc.getCharacteristic(TX);
+    const rx = await svc.getCharacteristic(RX);
+    rx.addEventListener('characteristicvaluechanged', ev => {
+      const r = dec.decode(ev.target.value).trim();
+      log('← ' + r);
+      const d = r.replace(';', '').trim();
+      if (/^\d{1,3}$/.test(d)) $('#battery').textContent = '🔋 ' + d + '%';
+    });
+    await rx.startNotifications();
+    ready = true; busy = false; sent = -1;
+    setStatus(device.name || 'Conectado', GREEN);
+    log('pronto');
+    enqueue('Battery;');
+    keepAwake();
+  } catch (e) {
+    log('erro: ' + e.message);
+    if (e.name === 'NotFoundError') setStatus('Nenhum aparelho escolhido');
+    else setStatus('Falhou: ' + e.message, RED);
+    cleanup();
+  }
+}
+
+function onDisconnected() { log('desconectou'); cleanup(); setStatus('Desconectado'); }
+
+function cleanup() {
+  ready = false; busy = false; tx = null; queue.length = 0; sent = -1;
+  pattern = null; wanted = 0; setLevel(0); selectChip('manual');
+  $('#connect').textContent = 'Conectar';
+}
+
+async function disconnect() {
+  if (ready) { try { await write('Vibrate:0;'); } catch {} }
+  if (device && device.gatt.connected) device.gatt.disconnect();
+  cleanup(); setStatus('Desconectado');
+}
+
+// Fila serializada: uma escrita (com resposta) por vez
+async function write(c) {
+  const data = enc.encode(c);
+  log('→ ' + c);
+  if (tx.writeValueWithResponse) await tx.writeValueWithResponse(data);
+  else await tx.writeValue(data);
+}
+async function pump() {
+  if (busy || !ready || !queue.length) return;
+  const c = queue.shift();
+  busy = true;
+  try { await write(c); }
+  catch (e) { log('falha: ' + e.message); if (c.startsWith('Vibrate')) sent = -1; }
+  busy = false;
+  pump();
+}
+function enqueue(c) { if (!ready) { log('não conectado: ' + c); return; } queue.push(c); pump(); }
+
+// Ticker: no máximo 10 comandos/s, só quando o nível muda e a fila está livre
+setInterval(() => {
+  const now = performance.now(), stepMs = 800 - $('#rhythm').value * 6;
+  if (pattern && now - lastStep >= stepMs) {
+    lastStep = now;
+    wanted = pattern === 'aleatorio' ? 4 + Math.floor(Math.random() * 17)
+           : PATTERNS[pattern][step++ % PATTERNS[pattern].length];
+    setLevel(wanted);
+  }
+  if (ready && !busy && !queue.length && wanted !== sent) { sent = wanted; queue.push('Vibrate:' + wanted + ';'); pump(); }
+}, TICK_MS);
+
+function stopAll() {
+  pattern = null; wanted = 0; setLevel(0); selectChip('manual');
+  if (navigator.vibrate) navigator.vibrate(30);
+  if (ready) { queue.length = 0; queue.unshift('Vibrate:0;'); sent = 0; pump(); }
+}
+
+// Mantém a tela acesa enquanto conectado (se o navegador permitir)
+let lock = null;
+async function keepAwake() { try { lock = await navigator.wakeLock?.request('screen'); } catch {} }
+document.addEventListener('visibilitychange', () => { if (ready && document.visibilityState === 'visible') keepAwake(); });
+
+// ---------- botões ----------
+$('#connect').onclick = () => $('#connect').textContent === 'Sair' ? disconnect() : connect();
+$('#any').onclick = () => { if (!ready) connect(true); };
+$('#battery').onclick = () => enqueue('Battery;');
+$('#stop').onclick = stopAll;
+$('#toggle').onclick = () => {
+  const show = $('#console').classList.toggle('show');
+  $('#toggle').innerHTML = show ? '⌃&nbsp; Ocultar console' : '⌄&nbsp; Console avançado';
+};
+$('#send').onclick = () => {
+  let c = $('#cmd').value.trim(); if (!c) return;
+  if (!c.endsWith(';')) c += ';';
+  enqueue(c);
+};
+window.addEventListener('pagehide', () => { if (ready) { try { tx.writeValue(enc.encode('Vibrate:0;')); } catch {} } });
+</script>
+</body>
+</html>
