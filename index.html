@@ -7,6 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="robots" content="noindex">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Aura</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 108 108'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='1' x2='1' y2='0'%3E%3Cstop offset='0' stop-color='%237C4DFF'/%3E%3Cstop offset='1' stop-color='%23FF4D8D'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='54' cy='54' r='50' fill='url(%23g)'/%3E%3Ccircle cx='54' cy='54' r='28' fill='none' stroke='%23fffc' stroke-width='5'/%3E%3Ccircle cx='54' cy='54' r='12' fill='%23fff'/%3E%3C/svg%3E">
 <style>
@@ -37,6 +39,12 @@
     font:700 22px inherit; font-family:inherit; letter-spacing:.2em; cursor:pointer;
     background:linear-gradient(90deg,#E53950,#FF6A3D); box-shadow:0 8px 24px rgba(229,57,80,.35); }
   #stop:active { transform:scale(.98); }
+  .switch { display:flex; align-items:center; gap:12px; margin:6px 2px 4px; font-size:14px; color:var(--muted); cursor:pointer; }
+  .switch input { display:none; }
+  .switch span { position:relative; width:44px; height:26px; flex:none; border-radius:13px; background:rgba(255,255,255,.18); transition:background .2s; }
+  .switch span::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:transform .2s; }
+  .switch input:checked + span { background:linear-gradient(90deg,var(--violet),var(--pink)); }
+  .switch input:checked + span::after { transform:translateX(18px); }
   #toggle { display:block; margin:0 auto; background:none; border:0; color:var(--muted); font:13px inherit; font-family:inherit; cursor:pointer; }
   #console { display:none; margin-top:8px; padding:12px 14px; background:rgba(0,0,0,.2); border:1px solid var(--stroke); border-radius:16px; }
   #console.show { display:block; }
@@ -75,6 +83,8 @@
 
   <div class="label">RITMO DOS MODOS</div>
   <input type="range" id="rhythm" min="0" max="100" value="50">
+
+  <label class="switch"><input type="checkbox" id="bg" checked><span></span>Continuar com a tela desligada</label>
 
   <button id="stop">PARAR</button>
 
@@ -124,7 +134,7 @@ const CHIPS = [['manual', 'Manual'], ['onda', '〰 Onda'], ['pulso', '◉ Pulso'
 for (const [k, label] of CHIPS) {
   const b = document.createElement('button');
   b.className = 'chip'; b.textContent = label; b.dataset.k = k;
-  b.onclick = () => { selectChip(k); if (k === 'manual') pattern = null; else { pattern = k; step = 0; lastStep = 0; } };
+  b.onclick = () => { selectChip(k); if (k === 'manual') pattern = null; else { pattern = k; step = 0; lastStep = 0; } updateMedia(); };
   $('#chips').appendChild(b);
 }
 function selectChip(k) { for (const c of $('#chips').children) c.classList.toggle('on', c.dataset.k === k); }
@@ -207,78 +217,135 @@ cv.addEventListener('pointermove', e => { if (cv.hasPointerCapture(e.pointerId))
 
 // ---------- Bluetooth ----------
 const enc = new TextEncoder(), dec = new TextDecoder();
+const WRITE_TIMEOUT_MS = 3000;   // escrita sem resposta: libera a fila
+const KEEPALIVE_MS = 5000;       // reenvia o nível atual (firmware barato pode "esquecer")
+const BATTERY_POLL_MS = 60000;   // também serve de teste de vida do link
+let wantConnected = false, reconnectTimer = null, attempt = 0, lastKeep = 0, lastBattery = 0;
+
 if (!navigator.bluetooth) {
   $('#unsupported').style.display = 'block';
   setStatus('Bluetooth indisponível', RED);
 }
 
+function showHelp() {
+  $('#unsupported').innerHTML = 'O Chrome não conseguiu usar o Bluetooth. Confira:<br>' +
+    '<b>1.</b> Bluetooth e <b>Localização</b> ligados no celular.<br>' +
+    '<b>2.</b> Configurações → Apps → <b>Chrome</b> → Permissões → <b>Dispositivos por perto</b>: Permitir.<br>' +
+    '<b>3.</b> No Chrome: ⋮ → Configurações → Configurações do site → <b>Bluetooth</b>: permitido.';
+  $('#unsupported').style.display = 'block';
+}
+
 async function connect(any = false) {
   if (!navigator.bluetooth) return;
   try {
+    if (navigator.bluetooth.getAvailability && !(await navigator.bluetooth.getAvailability())) {
+      log('getAvailability: false'); setStatus('Bluetooth indisponível para o navegador', RED); showHelp(); return;
+    }
+  } catch {}
+  try {
     setStatus('Escolha o aparelho…', YELLOW);
-    device = await navigator.bluetooth.requestDevice(any
+    const d = await navigator.bluetooth.requestDevice(any
       ? { acceptAllDevices: true, optionalServices: [SERVICE] }
       : { filters: [{ namePrefix: 'LVS-' }, { services: [SERVICE] }], optionalServices: [SERVICE] });
+    if (device) device.removeEventListener('gattserverdisconnected', onDisconnected);
+    device = d;
     device.addEventListener('gattserverdisconnected', onDisconnected);
-    setStatus('Conectando…', YELLOW);
+    wantConnected = true; attempt = 0;
     $('#connect').textContent = 'Sair';
-    const server = await device.gatt.connect();
-    const svc = await server.getPrimaryService(SERVICE);
-    tx = await svc.getCharacteristic(TX);
-    const rx = await svc.getCharacteristic(RX);
-    rx.addEventListener('characteristicvaluechanged', ev => {
-      const r = dec.decode(ev.target.value).trim();
-      log('← ' + r);
-      const d = r.replace(';', '').trim();
-      if (/^\d{1,3}$/.test(d)) $('#battery').textContent = '🔋 ' + d + '%';
-    });
-    await rx.startNotifications();
-    ready = true; busy = false; sent = -1;
-    setStatus(device.name || 'Conectado', GREEN);
-    log('pronto');
-    enqueue('Battery;');
-    keepAwake();
+    startBackground();               // precisa do toque do usuário para liberar o áudio
+    setStatus('Conectando…', YELLOW);
+    await setup();
   } catch (e) {
-    log('erro: ' + e.message);
-    if (e.name === 'NotFoundError') setStatus('Nenhum aparelho escolhido');
+    log('erro: ' + e.name + ': ' + e.message);
+    if (e.name === 'NotFoundError' && /cancel/i.test(e.message)) setStatus('Nenhum aparelho escolhido');
+    else if (e.name === 'NotFoundError') { setStatus('Chrome sem acesso ao Bluetooth: ' + e.message, RED); showHelp(); }
+    else if (wantConnected) scheduleReconnect();
     else setStatus('Falhou: ' + e.message, RED);
-    cleanup();
+    if (!wantConnected) cleanup();
   }
 }
 
-function onDisconnected() { log('desconectou'); cleanup(); setStatus('Desconectado'); }
+// Abre GATT, características e notificações. Usado na 1ª conexão e nas reconexões.
+async function setup() {
+  const server = await device.gatt.connect();
+  const svc = await server.getPrimaryService(SERVICE);
+  tx = await svc.getCharacteristic(TX);
+  const rx = await svc.getCharacteristic(RX);
+  rx.removeEventListener('characteristicvaluechanged', onRx);
+  rx.addEventListener('characteristicvaluechanged', onRx);
+  await rx.startNotifications();
+  const wasReconnect = attempt > 0;
+  ready = true; busy = false; sent = -1; attempt = 0; queue.length = 0;
+  setStatus(device.name || 'Conectado', GREEN);
+  log(wasReconnect ? 'reconectado — retomando' : 'pronto');
+  lastBattery = performance.now();
+  enqueue('Battery;');
+  keepAwake();
+  updateMedia();
+}
+
+function onRx(ev) {
+  const r = dec.decode(ev.target.value).trim();
+  log('← ' + r);
+  const d = r.replace(';', '').trim();
+  if (/^\d{1,3}$/.test(d)) $('#battery').textContent = '🔋 ' + d + '%';
+}
+
+function onDisconnected() {
+  ready = false; busy = false; tx = null; queue.length = 0; sent = -1;
+  log('desconectou');
+  if (wantConnected) scheduleReconnect();
+  else { cleanup(); setStatus('Desconectado'); }
+}
+
+// Reconexão com espera crescente (1, 2, 4, 8, 15 s…) enquanto o usuário quiser a conexão.
+// O modo/nível ativo é mantido e retomado ao voltar.
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+  const delay = Math.min(15000, 1000 * 2 ** attempt++);
+  setStatus('Reconectando…', YELLOW);
+  log('nova tentativa em ' + Math.round(delay / 1000) + ' s');
+  reconnectTimer = setTimeout(async () => {
+    if (!wantConnected || ready) return;
+    try { await setup(); }
+    catch (e) { log('reconexão falhou: ' + e.message); if (wantConnected && !ready) scheduleReconnect(); }
+  }, delay);
+}
 
 function cleanup() {
+  clearTimeout(reconnectTimer);
   ready = false; busy = false; tx = null; queue.length = 0; sent = -1;
   pattern = null; wanted = 0; setLevel(0); selectChip('manual');
   $('#connect').textContent = 'Conectar';
+  stopBackground();
 }
 
 async function disconnect() {
+  wantConnected = false;
   if (ready) { try { await write('Vibrate:0;'); } catch {} }
   if (device && device.gatt.connected) device.gatt.disconnect();
   cleanup(); setStatus('Desconectado');
 }
 
-// Fila serializada: uma escrita (com resposta) por vez
-async function write(c) {
+// Escrita COM resposta, com prazo: se o aparelho não confirmar, a fila não trava.
+function write(c) {
+  if (!c.startsWith('Vibrate')) log('→ ' + c);
   const data = enc.encode(c);
-  log('→ ' + c);
-  if (tx.writeValueWithResponse) await tx.writeValueWithResponse(data);
-  else await tx.writeValue(data);
+  const op = tx.writeValueWithResponse ? tx.writeValueWithResponse(data) : tx.writeValue(data);
+  return Promise.race([op, new Promise((_, rej) => setTimeout(() => rej(new Error('sem resposta')), WRITE_TIMEOUT_MS))]);
 }
 async function pump() {
   if (busy || !ready || !queue.length) return;
   const c = queue.shift();
   busy = true;
   try { await write(c); }
-  catch (e) { log('falha: ' + e.message); if (c.startsWith('Vibrate')) sent = -1; }
+  catch (e) { log('falha em ' + c + ': ' + e.message); if (c.startsWith('Vibrate')) sent = -1; }
   busy = false;
   pump();
 }
 function enqueue(c) { if (!ready) { log('não conectado: ' + c); return; } queue.push(c); pump(); }
 
-// Ticker: no máximo 10 comandos/s, só quando o nível muda e a fila está livre
+// Ticker: padrões, limite de 10 comandos/s, keepalive e leitura periódica da bateria
 setInterval(() => {
   const now = performance.now(), stepMs = 800 - $('#rhythm').value * 6;
   if (pattern && now - lastStep >= stepMs) {
@@ -287,19 +354,74 @@ setInterval(() => {
            : PATTERNS[pattern][step++ % PATTERNS[pattern].length];
     setLevel(wanted);
   }
-  if (ready && !busy && !queue.length && wanted !== sent) { sent = wanted; queue.push('Vibrate:' + wanted + ';'); pump(); }
+  if (!ready || busy || queue.length) return;
+  if (wanted !== sent || (wanted > 0 && now - lastKeep > KEEPALIVE_MS)) {
+    sent = wanted; lastKeep = now; queue.push('Vibrate:' + wanted + ';'); pump();
+  } else if (now - lastBattery > BATTERY_POLL_MS) {
+    lastBattery = now; queue.push('Battery;'); pump();
+  }
 }, TICK_MS);
 
 function stopAll() {
   pattern = null; wanted = 0; setLevel(0); selectChip('manual');
   if (navigator.vibrate) navigator.vibrate(30);
   if (ready) { queue.length = 0; queue.unshift('Vibrate:0;'); sent = 0; pump(); }
+  updateMedia();
 }
+
+// ---------- segundo plano ----------
+// Navegadores congelam páginas escondidas (timers param, conexão cai). Uma página que está
+// tocando mídia não é congelada nem tem os timers limitados; por isso, enquanto conectado,
+// tocamos um áudio em loop num volume inaudível (-60 dBFS) e registramos a Media Session,
+// que ainda dá controles na tela de bloqueio (pausar = PARAR).
+let bgAudio = null;
+function silentWav() {
+  const rate = 8000, n = rate * 2, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, s) => [...s].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(33 * Math.sin(i * 2 * Math.PI * 40 / rate)), true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+function startBackground() {
+  if (!$('#bg').checked) return;
+  try {
+    if (!bgAudio) { bgAudio = new Audio(silentWav()); bgAudio.loop = true; }
+    bgAudio.play().then(() => log('modo segundo plano ativo')).catch(e => log('segundo plano indisponível: ' + e.message));
+  } catch (e) { log('segundo plano indisponível: ' + e.message); }
+  if ('mediaSession' in navigator) {
+    const ms = navigator.mediaSession;
+    const set = (a, f) => { try { ms.setActionHandler(a, f); } catch {} };
+    set('pause', () => { stopAll(); bgAudio && bgAudio.play(); });
+    set('stop', () => disconnect());
+    set('play', () => bgAudio && bgAudio.play());
+    updateMedia();
+  }
+}
+function stopBackground() {
+  if (bgAudio) bgAudio.pause();
+  if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
+}
+function updateMedia() {
+  if (!('mediaSession' in navigator) || !bgAudio || bgAudio.paused || !window.MediaMetadata) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: 'Aura', artist: ready ? (pattern ? 'Modo ' + pattern : wanted > 0 ? 'Intensidade ' + wanted : 'Parado') : 'Reconectando…',
+    artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }],
+  });
+}
+$('#bg').onchange = () => { if ($('#bg').checked && wantConnected) startBackground(); else if (!$('#bg').checked) stopBackground(); };
 
 // Mantém a tela acesa enquanto conectado (se o navegador permitir)
 let lock = null;
 async function keepAwake() { try { lock = await navigator.wakeLock?.request('screen'); } catch {} }
-document.addEventListener('visibilitychange', () => { if (ready && document.visibilityState === 'visible') keepAwake(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (ready) keepAwake();
+  // de volta à frente: se a conexão caiu enquanto escondido, tenta de novo já
+  if (wantConnected && !ready) { attempt = 0; scheduleReconnect(); }
+});
 
 // ---------- botões ----------
 $('#connect').onclick = () => $('#connect').textContent === 'Sair' ? disconnect() : connect();
@@ -316,6 +438,7 @@ $('#send').onclick = () => {
   enqueue(c);
 };
 window.addEventListener('pagehide', () => { if (ready) { try { tx.writeValue(enc.encode('Vibrate:0;')); } catch {} } });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
