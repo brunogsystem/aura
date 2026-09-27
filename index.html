@@ -264,8 +264,8 @@ async function connect(any = false) {
     log('erro: ' + e.name + ': ' + e.message);
     if (e.name === 'NotFoundError' && /cancel/i.test(e.message)) setStatus('Nenhum aparelho escolhido');
     else if (e.name === 'NotFoundError') { setStatus('Chrome sem acesso ao Bluetooth: ' + e.message, RED); showHelp(); }
-    else if (wantConnected) scheduleReconnect();
-    else setStatus('Falhou: ' + e.message, RED);
+    else if (wantConnected && attempt < 3) scheduleReconnect();
+    else { wantConnected = false; setStatus('Falhou: ' + e.message, RED); }
     if (!wantConnected) cleanup();
   }
 }
@@ -277,20 +277,36 @@ async function setup() {
   settingUp = true;
   try { await doSetup(); } finally { settingUp = false; }
 }
+// Cada etapa tem prazo: no Android, o Chrome às vezes fica esperando para sempre.
+function withTimeout(p, ms, what) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + ': sem resposta em ' + ms / 1000 + ' s')), ms))]);
+}
 async function doSetup() {
-  const server = await device.gatt.connect();
-  const svc = await server.getPrimaryService(SERVICE);
-  tx = await svc.getCharacteristic(TX);
-  const rx = await svc.getCharacteristic(RX);
-  rx.removeEventListener('characteristicvaluechanged', onRx);
-  rx.addEventListener('characteristicvaluechanged', onRx);
-  await rx.startNotifications();
+  const step = (n, txt) => { setStatus('Conectando… ' + n + '/3 ' + txt, YELLOW); log(n + '/3 ' + txt); };
+  try {
+    step(1, 'link Bluetooth');
+    const server = await withTimeout(device.gatt.connect(), 12000, 'link');
+    await new Promise(r => setTimeout(r, 300)); // aparelho barato precisa de um respiro antes da descoberta
+    step(2, 'serviço');
+    const svc = await withTimeout(server.getPrimaryService(SERVICE), 8000, 'serviço');
+    step(3, 'canais');
+    tx = await withTimeout(svc.getCharacteristic(TX), 5000, 'canal TX');
+    const rx = await withTimeout(svc.getCharacteristic(RX), 5000, 'canal RX');
+    rx.removeEventListener('characteristicvaluechanged', onRx);
+    rx.addEventListener('characteristicvaluechanged', onRx);
+    // Notificações só servem para ler bateria/respostas: não podem travar a conexão.
+    withTimeout(rx.startNotifications(), 5000, 'notificações')
+      .then(() => { log('notificações ativas'); enqueue('Battery;'); })
+      .catch(e => log('sem notificações (' + e.message + ') — controle funciona mesmo assim'));
+  } catch (e) {
+    try { if (device.gatt.connected) device.gatt.disconnect(); } catch {}
+    throw e;
+  }
   const wasReconnect = attempt > 0;
   ready = true; busy = false; sent = -1; attempt = 0; queue.length = 0;
   setStatus(device.name || 'Conectado', GREEN);
   log(wasReconnect ? 'reconectado — retomando' : 'pronto');
   lastBattery = performance.now();
-  enqueue('Battery;');
   keepAwake();
   updateMedia();
 }
@@ -319,7 +335,10 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(async () => {
     if (!wantConnected || ready || settingUp) return;
     try { await setup(); }
-    catch (e) { log('reconexão falhou: ' + e.message); if (wantConnected && !ready) scheduleReconnect(); }
+    catch (e) {
+      log('reconexão falhou: ' + e.message);
+      if (wantConnected && !ready) scheduleReconnect();
+    }
   }, delay);
 }
 
