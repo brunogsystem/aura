@@ -61,7 +61,10 @@
 <main>
   <header>
     <h1>Aura</h1>
-    <button class="pill" id="battery">🔋 —</button>
+    <div class="row">
+      <button class="pill grad" id="install" style="display:none">⬇ Instalar</button>
+      <button class="pill" id="battery">🔋 —</button>
+    </div>
   </header>
 
   <div class="card">
@@ -220,7 +223,7 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 const WRITE_TIMEOUT_MS = 3000;   // escrita sem resposta: libera a fila
 const KEEPALIVE_MS = 5000;       // reenvia o nível atual (firmware barato pode "esquecer")
 const BATTERY_POLL_MS = 60000;   // também serve de teste de vida do link
-let wantConnected = false, reconnectTimer = null, attempt = 0, lastKeep = 0, lastBattery = 0;
+let stopConfirmed = false, writeFails = 0, wantConnected = false, reconnectTimer = null, attempt = 0, lastKeep = 0, lastBattery = 0;
 
 if (!navigator.bluetooth) {
   $('#unsupported').style.display = 'block';
@@ -251,7 +254,10 @@ async function connect(any = false) {
       ? { acceptAllDevices: true, optionalServices: [SERVICE] }
       : { filters: [{ namePrefix: 'LVS-' }, { services: [SERVICE] }], optionalServices: [SERVICE] });
     choosing = false;
-    if (device) device.removeEventListener('gattserverdisconnected', onDisconnected);
+    if (device) {
+      device.removeEventListener('gattserverdisconnected', onDisconnected);
+      try { if (device.gatt.connected) device.gatt.disconnect(); } catch {}
+    }
     device = d;
     device.addEventListener('gattserverdisconnected', onDisconnected);
     wantConnected = true; attempt = 0;
@@ -285,7 +291,11 @@ async function doSetup() {
   const step = (n, txt) => { setStatus('Conectando… ' + n + '/3 ' + txt, YELLOW); log(n + '/3 ' + txt); };
   try {
     step(1, 'link Bluetooth');
-    const server = await withTimeout(device.gatt.connect(), 12000, 'link');
+    if (device.gatt.connected) { device.gatt.disconnect(); await new Promise(r => setTimeout(r, 500)); }
+    let timedOut = false;
+    const cp = device.gatt.connect();
+    cp.then(() => { if (timedOut && !ready && !settingUp) { log('link atrasado descartado'); try { device.gatt.disconnect(); } catch {} } }, () => {});
+    const server = await withTimeout(cp, 12000, 'link').catch(e => { timedOut = true; throw e; });
     await new Promise(r => setTimeout(r, 300)); // aparelho barato precisa de um respiro antes da descoberta
     step(2, 'serviço');
     const svc = await withTimeout(server.getPrimaryService(SERVICE), 8000, 'serviço');
@@ -305,6 +315,7 @@ async function doSetup() {
   const wasReconnect = attempt > 0;
   ready = true; busy = false; sent = -1; attempt = 0; queue.length = 0;
   setStatus(device.name || 'Conectado', GREEN);
+  $('#connect').textContent = 'Sair';
   log(wasReconnect ? 'reconectado — retomando' : 'pronto');
   lastBattery = performance.now();
   keepAwake();
@@ -321,16 +332,20 @@ function onRx(ev) {
 function onDisconnected() {
   ready = false; busy = false; tx = null; queue.length = 0; sent = -1;
   log('desconectou');
+  if (settingUp) return;                 // durante o setup, quem decide é o próprio setup
   if (wantConnected) scheduleReconnect();
   else { cleanup(); setStatus('Desconectado'); }
 }
 
-// Reconexão com espera crescente (1, 2, 4, 8, 15 s…) enquanto o usuário quiser a conexão.
-// O modo/nível ativo é mantido e retomado ao voltar.
+// Reconexão: algumas tentativas automáticas com espera crescente (1, 2, 4, 8, 15 s).
+// O modo/nível ativo é mantido e retomado ao voltar. Se não der, pede um toque em
+// "Reconectar", que refaz a escolha do aparelho do zero (o que destrava o Chrome no Android).
+const MAX_AUTO_RECONNECT = 5;
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
+  if (attempt >= MAX_AUTO_RECONNECT) { giveUp(); return; }
   const delay = Math.min(15000, 1000 * 2 ** attempt++);
-  setStatus('Reconectando…', YELLOW);
+  setStatus('Reconectando… (' + attempt + '/' + MAX_AUTO_RECONNECT + ')', YELLOW);
   log('nova tentativa em ' + Math.round(delay / 1000) + ' s');
   reconnectTimer = setTimeout(async () => {
     if (!wantConnected || ready || settingUp) return;
@@ -340,6 +355,19 @@ function scheduleReconnect() {
       if (wantConnected && !ready) scheduleReconnect();
     }
   }, delay);
+}
+
+function giveUp() {
+  wantConnected = false; clearTimeout(reconnectTimer);
+  ready = false; busy = false; tx = null; queue.length = 0; sent = -1;
+  if (device) {
+    device.removeEventListener('gattserverdisconnected', onDisconnected); // senão o evento apagaria este aviso
+    try { if (device.gatt.connected) device.gatt.disconnect(); } catch {}
+  }
+  stopBackground();
+  setStatus('Conexão perdida', RED);
+  log('sem sucesso — toque em Reconectar (se persistir: desligue e ligue o aparelho)');
+  $('#connect').textContent = 'Reconectar';
 }
 
 function cleanup() {
@@ -353,9 +381,14 @@ function cleanup() {
 async function disconnect() {
   wantConnected = false; clearTimeout(reconnectTimer);
   pattern = null; wanted = 0;
-  if (ready) {   // PARAR pela fila (nunca duas escritas GATT ao mesmo tempo) e espera confirmar
+  // PARAR pela fila (nunca duas escritas GATT ao mesmo tempo); só corta o link depois de o
+  // aparelho confirmar, com até 3 tentativas.
+  for (let tries = 0; ready && tries < 3; tries++) {
+    stopConfirmed = false;
     queue.length = 0; queue.push('Vibrate:0;'); sent = 0; pump();
     for (let t = 0; t < 40 && (busy || queue.length); t++) await new Promise(r => setTimeout(r, 100));
+    if (stopConfirmed) break;
+    log('parada não confirmada — tentando de novo');
   }
   if (device && device.gatt.connected) device.gatt.disconnect();
   cleanup(); setStatus('Desconectado');
@@ -372,8 +405,13 @@ async function pump() {
   if (busy || !ready || !queue.length) return;
   const c = queue.shift();
   busy = true;
-  try { await write(c); }
-  catch (e) { log('falha em ' + c + ': ' + e.message); if (c.startsWith('Vibrate')) sent = -1; }
+  try { await write(c); writeFails = 0; if (c === 'Vibrate:0;') stopConfirmed = true; }
+  catch (e) {
+    log('falha em ' + c + ': ' + e.message);
+    if (c.startsWith('Vibrate')) sent = -1;
+    // link "zumbi": parece conectado mas nada passa — derruba para a reconexão assumir
+    if (++writeFails >= 3 && ready) { log('link sem resposta — reiniciando conexão'); writeFails = 0; try { device.gatt.disconnect(); } catch {} }
+  }
   busy = false;
   pump();
 }
@@ -458,7 +496,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- botões ----------
-$('#connect').onclick = () => $('#connect').textContent === 'Sair' ? disconnect() : connect();
+$('#connect').onclick = () => $('#connect').textContent === 'Sair' ? disconnect() : connect();  // 'Reconectar' também cai em connect()
 $('#any').onclick = () => { if (!ready) connect(true); };
 $('#battery').onclick = () => enqueue('Battery;');
 $('#stop').onclick = stopAll;
@@ -472,6 +510,16 @@ $('#send').onclick = () => {
   enqueue(c);
 };
 window.addEventListener('pagehide', () => { if (ready) { try { tx.writeValue(enc.encode('Vibrate:0;')); } catch {} } });
+// Instalação como app: o Chrome avisa quando o site é instalável; aí mostramos o botão.
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#install').style.display = ''; });
+window.addEventListener('appinstalled', () => { installEvt = null; $('#install').style.display = 'none'; log('app instalado'); });
+$('#install').onclick = async () => {
+  if (!installEvt) return;
+  installEvt.prompt();
+  await installEvt.userChoice;
+  installEvt = null; $('#install').style.display = 'none';
+};
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>

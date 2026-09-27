@@ -1,5 +1,5 @@
 // Rede primeiro (sempre pega a versão nova); cache só como reserva offline.
-const CACHE = 'aura-v1';
+const CACHE = 'aura-v2';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(clients.claim()));
 self.addEventListener('fetch', e => {
